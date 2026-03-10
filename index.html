@@ -166,13 +166,37 @@ function showToast(m){const t=document.getElementById('toast');t.textContent=m;t
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 document.getElementById('login-user').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('login-pass').focus()});
 checkSession().then(v=>{if(v)showApp()});
+// ===== AUTH TOKEN FOR SCRIPT =====
+async function generateScriptToken(){
+  var ts=Date.now();
+  var payload=currentUser+':'+ts;
+  var key='eo8x'+currentUser.length;
+  var raw=payload+':'+key;
+  var buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+  var hash=Array.from(new Uint8Array(buf)).map(function(x){return x.toString(16).padStart(2,'0')}).join('');
+  return btoa(JSON.stringify({u:currentUser,t:ts,h:hash.substring(0,16)}));
+}
 // ===== SNIPER SCRIPT GENERATOR =====
-function copySniperScript(){
-copyText(getSniperScript());
+async function copySniperScript(){
+var token=await generateScriptToken();
+copyText(getSniperScript(token));
 showToast('v8 script copied! Paste on portal.');
 }
-function getSniperScript(){ return `(function(){
+function getSniperScript(token){ var _ulist=JSON.stringify(ALLOWED_USERS.map(function(u){return u.username})); return `(function(){
 'use strict';
+/* === AUTH CHECK === */
+var _tk='${token}';
+try{var _d=JSON.parse(atob(_tk));
+var _users=${_ulist};
+if(_users.indexOf(_d.u)<0){alert('Unauthorized.');return}
+if(Date.now()-_d.t>86400000){alert('Token expired. Copy a fresh script.');return}
+/* verify hash */
+var _key='eo8x'+_d.u.length;
+var _raw=_d.u+':'+_d.t+':'+_key;
+crypto.subtle.digest('SHA-256',new TextEncoder().encode(_raw)).then(function(buf){
+var _h=Array.from(new Uint8Array(buf)).map(function(x){return x.toString(16).padStart(2,'0')}).join('').substring(0,16);
+if(_h!==_d.h){alert('Invalid token.');return}
+/* === VERIFIED — LAUNCH === */
 if(document.getElementById('eo8')){document.getElementById('eo8').remove()}
 var SVC='https://services.onlineschedule.com/service/tmp/teamMemberOptions/mySchedule';
 var GATE_OFFSET=2,POLL=10,MAX_ATK=300,BUF=50;
@@ -456,10 +480,12 @@ window.EO_SET=function(date,aid,sid,time){capturedIds[date]={aid:aid,sid:sid||1,
 
 /* ===== BOOT ===== */
 console.log('[EO8] ==========================================');
-console.log('[EO8] EO SNIPER v8.1 — ANGULAR SCRAPE + API');
-console.log('[EO8] Auto-captures AssignmentId from dialog');
+console.log('[EO8] EO SNIPER v8.1 — AUTHORIZED USE ONLY');
+console.log('[EO8] Token: '+_d.u+' verified');
 console.log('[EO8] ==========================================');
 buildUI();
+});/* end hash verify .then */
+}catch(e){alert('Invalid token.');return}
 })();`;
 }
 </script>
