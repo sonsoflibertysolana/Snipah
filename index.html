@@ -169,12 +169,13 @@ checkSession().then(v=>{if(v)showApp()});
 // ===== AUTH TOKEN FOR SCRIPT =====
 async function generateScriptToken(){
   var ts=Date.now();
-  var payload=currentUser+':'+ts;
+  var nonce=Math.random().toString(36).substring(2,10)+Math.random().toString(36).substring(2,10);
+  var payload=currentUser+':'+ts+':'+nonce;
   var key='eo8x'+currentUser.length;
   var raw=payload+':'+key;
   var buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
   var hash=Array.from(new Uint8Array(buf)).map(function(x){return x.toString(16).padStart(2,'0')}).join('');
-  return btoa(JSON.stringify({u:currentUser,t:ts,h:hash.substring(0,16)}));
+  return btoa(JSON.stringify({u:currentUser,t:ts,n:nonce,h:hash.substring(0,16)}));
 }
 // ===== SNIPER SCRIPT GENERATOR =====
 async function copySniperScript(){
@@ -189,13 +190,41 @@ var _tk='${token}';
 try{var _d=JSON.parse(atob(_tk));
 var _users=${_ulist};
 if(_users.indexOf(_d.u)<0){alert('Unauthorized.');return}
-if(Date.now()-_d.t>86400000){alert('Token expired. Copy a fresh script.');return}
+if(Date.now()-_d.t>64800000){alert('Token expired (18h). Copy a fresh script.');return}
 /* verify hash */
 var _key='eo8x'+_d.u.length;
-var _raw=_d.u+':'+_d.t+':'+_key;
+var _raw=_d.u+':'+_d.t+':'+_d.n+':'+_key;
 crypto.subtle.digest('SHA-256',new TextEncoder().encode(_raw)).then(function(buf){
 var _h=Array.from(new Uint8Array(buf)).map(function(x){return x.toString(16).padStart(2,'0')}).join('').substring(0,16);
 if(_h!==_d.h){alert('Invalid token.');return}
+/* === SESSION BINDING + KILL SWITCH === */
+var _sid=sessionStorage.getItem('SSID')||'';
+var _bindKey='eo_bind_'+_d.n;
+var _existing=localStorage.getItem(_bindKey);
+if(_existing&&_existing!==_sid){
+  /* SOMEONE ELSE already used this token on a different session */
+  /* KILL the old instance */
+  if(window._eo8_kill)window._eo8_kill();
+  var _oldPanel=document.getElementById('eo8');if(_oldPanel)_oldPanel.remove();
+  /* NOW KILL OURSELVES TOO — neither person gets it */
+  localStorage.removeItem(_bindKey);
+  alert('This script was already used on another session. Both instances killed. Copy a fresh script from the app.');
+  return;
+}
+/* Bind this nonce to this session */
+localStorage.setItem(_bindKey,_sid);
+/* Register kill function so future dupes can nuke us */
+window._eo8_kill=function(){
+  if(window._eo8_intervals){window._eo8_intervals.forEach(function(iv){clearInterval(iv)})}
+  var p=document.getElementById('eo8');if(p)p.remove();
+  window._eo8_dead=true;
+};
+/* Same-page dupe check — if script already running on this page, kill old */
+if(document.getElementById('eo8')){
+  if(window._eo8_kill)window._eo8_kill();
+}
+if(window._eo8_dead){return}
+window._eo8_intervals=[];
 /* === VERIFIED — LAUNCH === */
 if(document.getElementById('eo8')){document.getElementById('eo8').remove()}
 var SVC='https://services.onlineschedule.com/service/tmp/teamMemberOptions/mySchedule';
@@ -285,7 +314,8 @@ function buildUI(){
 }
 
 /* ===== CLOCK & COUNTDOWN ===== */
-function startClock(){setInterval(function(){
+function startClock(){var _iv=setInterval(function(){
+  if(window._eo8_dead){clearInterval(_iv);return}
   var n=new Date();
   var el=document.getElementById('eo8-clock');
   if(el)el.textContent=n.toLocaleTimeString('en-US',{hour12:false})+'.'+String(n.getMilliseconds()).padStart(3,'0');
@@ -316,6 +346,7 @@ function updateNextGate(){
   currentCountdown={gate:next,shift:nextShift};
   if(next<=now){setStatus('GATE OPEN — '+nextShift.dow+' '+nextShift.time+' — FIRING!','#ff3333');attack(nextShift);return}
   countdownIv=setInterval(function(){
+    if(window._eo8_dead){clearInterval(countdownIv);return}
     var n2=new Date();var rem=next-n2;
     if(rem<=0){clearInterval(countdownIv);countdownIv=null;setStatus('GATE OPEN — FIRING!','#ff3333');attack(nextShift);return}
     var s=Math.floor(rem/1000),mm=Math.floor(s/60),ss=s%60;
@@ -388,12 +419,13 @@ function fireAPI(aid,sid,time){
 
 /* ===== ATTACK SEQUENCE ===== */
 function attack(shift){
-  if(fired[shift.date])return;
+  if(fired[shift.date]||window._eo8_dead)return;
   var stEl=document.getElementById('eo8-st-'+shift.date);
   var data=capturedIds[shift.date];
   var attempt=0;
 
   function tryAPI(){
+    if(window._eo8_dead)return;
     attempt++;
     if(attempt>MAX_ATK){if(stEl){stEl.textContent='FAILED';stEl.style.color='#ff4444'}setStatus('Max retries for '+shift.date,'#ff4444');nextAfterFire(shift);return}
     if(!data){
